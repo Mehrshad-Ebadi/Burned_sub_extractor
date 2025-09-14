@@ -16,6 +16,16 @@ import numpy as np
 from openai import APIError, RateLimitError
 
 # ---------------- Utilities ----------------
+def tiny_thumb(gray, max_side=96):
+    h, w = gray.shape[:2]
+    s = max(1, int(round(max(h, w) / max_side)))
+    return cv2.resize(gray, (w//s, h//s), interpolation=cv2.INTER_AREA)
+
+def changed_enough(prev_tn, curr_tn, thr=6.0):
+    # mean absolute difference on tiny thumbnails
+    if prev_tn is None:
+        return True
+    return float(np.mean(cv2.absdiff(prev_tn, curr_tn))) >= thr
 
 def ms_to_ts(ms: int) -> str:
     if ms < 0: ms = 0
@@ -312,10 +322,27 @@ def extract_subs_from_video(
         ok, frame = cap.retrieve()
         if not ok:
             continue
+        # --- change gate before heavy OCR ---
+        crop_raw = frame[y0:y1, x0:x1]
+        gray_small = cv2.cvtColor(crop_raw, cv2.COLOR_BGR2GRAY)
+        tn = tiny_thumb(gray_small)
 
-        crop = frame[y0:y1, x0:x1]
-        crop = preprocess_crop(crop, denoise_binarize)
+        now_ms = int((frame_idx / fps) * 1000)
+        force_every_ms = 600  # always run OCR at least every 0.6s
+        time_due = (now_ms - globals().get("last_ocr_ms", -9999)) >= force_every_ms
+
+        if not changed_enough(globals().get("prev_tn", None), tn) and not time_due:
+            # no big visual change → skip OCR this frame
+            globals()["prev_tn"] = tn
+            continue
+
+        globals()["prev_tn"] = tn
+        globals()["last_ocr_ms"] = now_ms
+
+        # --- only do heavy OCR if change detected or timeout ---
+        crop = preprocess_crop(crop_raw, denoise_binarize)
         text = run_ocr(crop)
+        
         if text and not re.search(r"[A-Za-z\u0600-\u06FF]", text):
             text = ""
 
@@ -465,14 +492,14 @@ class Args:
     bottom_ratio = None          # distance from bottom (0-1), used with height_ratio
     height_ratio = None          # relative height (0-1) of ROI
     center_crop = None           # Center crop as WIDTHxHEIGHT ratios, e.g., 0.6x0.35
-    manual_rect = "800, 800, 1200, 1100"           # Manual rect as x0,y0,x1,y1 in pixels
+    manual_rect = "200, 400, 600, 500"           # Manual rect as x0,y0,x1,y1 in pixels
 
     # Auto-ROI probe controls
     probe_seconds = 4           # Seconds to probe for auto-ROI
     roi_scan_steps = 4           # Vertical steps to scan in bottom zone
 
     # OCR timing robustness
-    sample_stride = 1            # Process every Nth frame
+    sample_stride = 6            # Process every Nth frame
     stability_frames = 1         # Frames to confirm appearance/change
     sim_threshold = 0.90         # Similarity threshold for same text
     min_show_ms = 1            # Minimum on-screen duration to keep
