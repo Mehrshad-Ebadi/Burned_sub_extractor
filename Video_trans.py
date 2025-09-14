@@ -363,6 +363,12 @@ def extract_subs_from_video(
                 else:
                     print(f"\r[progress] {t_s:,.1f}s", end="", flush=True)
                 last_progress_report_s = t_s
+        
+        if last_confirmed and text and similar(last_confirmed, text) >= 0.98:
+            pending_diff = 0              # prevent accidental closure
+            # (optional) current_text = last_confirmed
+            continue
+
 
         if not text:
             if last_confirmed:
@@ -486,13 +492,13 @@ def translate_srt_parallel(client: OpenAI, srt_text: str, llm: str, max_workers:
 
 
 class Args:
-    video_path= "C:\\Users\\ebadi\\Videos\\channel\\transcriptor\\22.mp4"
+    video_path= "C:\\Users\\ebadi\\Videos\\channel\\transcriptor\\33.mp4"
     auto_roi=False
     # Manual ROI controls
     bottom_ratio = None          # distance from bottom (0-1), used with height_ratio
     height_ratio = None          # relative height (0-1) of ROI
     center_crop = None           # Center crop as WIDTHxHEIGHT ratios, e.g., 0.6x0.35
-    manual_rect = "200, 400, 600, 500"           # Manual rect as x0,y0,x1,y1 in pixels
+    manual_rect = "800, 800, 1200, 1080"           # Manual rect as x0,y0,x1,y1 in pixels
 
     # Auto-ROI probe controls
     probe_seconds = 4           # Seconds to probe for auto-ROI
