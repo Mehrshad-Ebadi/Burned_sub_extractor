@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from rapidocr_onnxruntime import RapidOCR
 import onnxruntime as ort
 from openai import OpenAI
+import numpy as np
 from openai import APIError, RateLimitError
 
 # ---------------- Utilities ----------------
@@ -48,12 +49,53 @@ def retry(func, *args, retries=5, backoff=2, **kwargs):
 
 # ------------- OCR helpers & ROI detection -------------
 
-def preprocess_crop(crop, denoise_binarize=True):
+def preprocess_crop(crop,
+                    denoise_binarize=True,
+                    scale=2.0,
+                    use_adaptive=True,
+                    auto_invert=True):
     if not denoise_binarize:
         return crop
+
+    # 1) Grayscale
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (3,3), 0)
-    _, bw = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+
+    # 2) Contrast boost (CLAHE is great for subtitles)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    gray = clahe.apply(gray)
+
+    # 3) Upscale for sharper edges
+    if scale and scale != 1.0:
+        gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+
+    # 4) Light denoise that preserves edges
+    gray = cv2.medianBlur(gray, 3)  # try 3; if still noisy, 5
+
+    # 5) Decide polarity (white text on dark bg -> invert for binary)
+    invert = False
+    if auto_invert:
+        band = gray[int(gray.shape[0]*0.25):, :]  # bottom part where text likely is
+        invert = band.mean() < 128  # dark background -> invert thresholding
+
+    # 6) Threshold
+    if use_adaptive:
+        bw = cv2.adaptiveThreshold(
+            gray, 255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV if invert else cv2.THRESH_BINARY,
+            31, 15  # tune: blockSize odd 21–41, C 5–15
+        )
+    else:
+        _, bw = cv2.threshold(
+            gray, 0, 255,
+            (cv2.THRESH_BINARY_INV if invert else cv2.THRESH_BINARY) | cv2.THRESH_OTSU
+        )
+
+    # 7) Gentle morphology to connect broken strokes
+    kernel = np.ones((2,2), np.uint8)
+    bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN, kernel)
+
+    # 8) Return in BGR (RapidOCR accepts BGR)
     return cv2.cvtColor(bw, cv2.COLOR_GRAY2BGR)
 
 def rapidocr_text_and_score(ocr: RapidOCR, crop) -> Tuple[str, float]:
@@ -149,7 +191,10 @@ def auto_detect_roi(video_path: str,
                 y0 = max(0, min(y0, height - roi_h))
                 y1 = y0 + roi_h
                 x0, x1 = 0, width
-                crop = frame[y0:y1, x0:x1]
+                pad = 8  # try 6–12
+                yy0 = max(0, y0 - pad); yy1 = min(frame.shape[0], y1 + pad)
+                xx0 = max(0, x0);       xx1 = min(frame.shape[1], x1)
+                crop = frame[yy0:yy1, xx0:xx1]
                 crop = preprocess_crop(crop, denoise_binarize)
                 txt, score = rapidocr_text_and_score(ocr, crop)
                 score_w = score * (1.0 + 0.02 * len(txt))
@@ -180,7 +225,7 @@ def extract_subs_from_video(
     # Timing & robustness
     sample_stride: int = 2,
     stability_frames: int = 2,
-    sim_threshold: float = 0.90,
+    sim_threshold: float = 0.80,
     min_show_ms: int = 500,
     denoise_binarize: bool = True,
     probe_seconds: int = 15,
@@ -414,7 +459,7 @@ def translate_srt_parallel(client: OpenAI, srt_text: str, llm: str, max_workers:
 
 
 class Args:
-    video_path= "C:\\Users\\ebadi\\Videos\\channel\\transcriptor\\33.mp4"
+    video_path= "C:\\Users\\ebadi\\Videos\\channel\\transcriptor\\22.mp4"
     auto_roi=False
     # Manual ROI controls
     bottom_ratio = None          # distance from bottom (0-1), used with height_ratio
@@ -428,7 +473,7 @@ class Args:
 
     # OCR timing robustness
     sample_stride = 1            # Process every Nth frame
-    stability_frames = 2         # Frames to confirm appearance/change
+    stability_frames = 1         # Frames to confirm appearance/change
     sim_threshold = 0.90         # Similarity threshold for same text
     min_show_ms = 1            # Minimum on-screen duration to keep
 
