@@ -492,7 +492,7 @@ def translate_srt_parallel(client: OpenAI, srt_text: str, llm: str, max_workers:
 
 
 class Args:
-    video_path= "C:\\Users\\ebadi\\Videos\\channel\\transcriptor\\33.mp4"
+    video_path= "C:\\Users\\ebadi\\Videos\\channel\\transcriptor\\22.mp4"
     auto_roi=False
     # Manual ROI controls
     bottom_ratio = None          # distance from bottom (0-1), used with height_ratio
